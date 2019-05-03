@@ -18,5 +18,17 @@
   <PropertyGroup>
     <VisualStudioVersion Condition=" '$(VisualStudioVersion)' == '' ">10.0</VisualStudioVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <Folder Include="docs\" />
+    <Folder Include="images\" />
+    <Folder Include="scripts\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="scripts\calc_length.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="docs\CalculateShorelineLength.html" />
+    <Content Include="images\CalculateShorelineLength.PNG" />
+  </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
 </Project>
