@@ -28,6 +28,12 @@ import numpy as np
 import datetime
 
 
+class ShorelineFile:
+
+    def __init__(self):
+        pass
+
+
 def main():
 
     # get the user-specified shapefile path(s)
