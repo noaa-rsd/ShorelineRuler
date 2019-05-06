@@ -64,29 +64,33 @@ class ShorelineFile:
         utm_zone = int(lon + 180.0) / 6 + 1
         return utm_zone
 
-    def get_length_results(self):
+    def calc_lengths(self):
         if self.has_ccoast:
-            cursor_fields = ['SHAPE@LENGTH', 'CLASS']
+            cursor_fields = ['SHAPE@LENGTH', 'CLASS', 'SHAPE@', 'OID@']
         else:
-            cursor_fields = ['SHAPE@LENGTH']
-            ccoast_class = None
+            cursor_fields = ['SHAPE@LENGTH', 'OID@']
 
         with arcpy.da.SearchCursor(self.shp_path, cursor_fields, 
                                    spatial_reference=self.sr_to_use) as cursor:
+            
             for row in cursor:
                 if self.has_ccoast:
                     ccoast_class = row[1]
-                self.add_to_shp_results(ccoast_class, row[0])
-        return 
+                else:
+                    ccoast_class = 'none'
+
+                if type(row[0]) is float:  # make sure length is a number (sometimes geometry is corrupt)
+                    self.add_to_shp_results(ccoast_class, row[0])
+                else:
+                    arcpy.AddWarning('unknown geometry error OID# {} ({}), moving on...'.format(row[-1], self.shp_name))
 
     def add_to_shp_results(self, ccoast_class, length_m):
-        # convert total length to desired units
         length_sm = length_m / METERS_PER_US_STATUTE_MILE
         length_nm = length_m / METERS_PER_US_NAUTICAL_MILE
 
-        result_info = [self.shp_name, self.shp_path, 
+        result_info = (self.shp_name, self.shp_path, 
                        self.info.spatialReference.name, self.sr_to_use.name,
-                       ccoast_class, length_sm, length_nm]
+                       ccoast_class, length_sm, length_nm, )
 
         self.results.append(result_info)
         
@@ -99,15 +103,28 @@ class ResultsTable:
         self.table_path = os.path.join(arcpy.env.scratchGDB, 
                                        'ShorelineMileages_{}'.format(self.table_name))
 
+        self.fields = ['shp_name', 'shp_path', 'shp_sr', 'calc_sr', 
+                       'ccoast_class', 'length_sm', 'length_nm']
+
     def add_shp_results(self, shp_results):
         self.results.extend(shp_results)
 
     def export_to_table(self):
-        results_df = pd.DataFrame(self.results, columns=[
-            'shp_name', 'shp_path', 'shp_sr', 'calc_sr', 
-            'ccoast_class', 'length_sm', 'length_nm'])
+        results_df = pd.DataFrame(self.results, columns=self.fields)
+
+        groupby_fields = ['shp_name', 'ccoast_class']
+        fields_to_round = {'length_sm': 2, 'length_nm': 2}
+
+        arcpy.AddMessage(results_df.groupby(groupby_fields).sum().round(fields_to_round))
+
+        agg_logic = {'shp_sr': 'first', 'shp_path': 'first', 'calc_sr': 'first', 
+                     'length_sm': 'sum', 'length_nm': 'sum'}
+
+        results_df = results_df.groupby(groupby_fields, as_index=False).agg(agg_logic)
+        results_df = results_df[self.fields]
+        results_df = results_df.round(fields_to_round)
+
         x = np.array(np.rec.fromrecords(results_df.values))
-        arcpy.AddMessage(x)
         names = results_df.dtypes.index.tolist()
         x.dtype.names = tuple(names)
         arcpy.da.NumPyArrayToTable(x, self.table_path)
@@ -132,11 +149,10 @@ def main():
     for shp_path in shps:
 
         shp = ShorelineFile(shp_path)
-        shp.get_length_results()
+        shp.calc_lengths()
 
         results.add_shp_results(shp.results)
 
-    arcpy.AddMessage(results.results)
     results.export_to_table()
     results.add_table_to_current_map()
 
