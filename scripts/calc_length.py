@@ -28,10 +28,97 @@ import numpy as np
 import datetime
 
 
+# create dict to store results
+# select EPSG code of relevant projected coordinate system
+# define spatial reference to use in searchcursor
+# (because calculations should be done in cartesian space, not unprojected degrees)
+# initialize cumulative length to zero
+# loop through polylines, via cursor, adding to cumulative length
+# output total length to user (as pandas dataframe)            
+# reorder the columns
+# generate geodatabase table from results pandas dataframe
+# add geodatabase to the 'CURRENT' map
+# append results to appropriate list in results dict
+
+
 class ShorelineFile:
 
+    def __init__(self, shp_path):
+        self.shp_path = shp_path
+        self.shp_name = self.shp_path.split(os.sep)[-1]
+        self.info = arcpy.Describe(self.shp_path)
+        self.utm_zone = self.calc_utm_zone()
+        self.utm_zone_epsg = int(epsg_codes[self.utm_zone][0])
+        self.sr_to_use = arcpy.SpatialReference(self.utm_zone_epsg)
+        self.shp_fields = arcpy.ListFields(self.shp_path)
+        self.has_ccoast = True if 'CLASS' in [f.name for f in self.shp_fields] else False
+        self.results = []
+
+    def calc_utm_zone(self):
+        if self.info.spatialReference.type == 'Geographic':
+            x_min = self.info.Extent.XMin
+            x_max = self.info.Extent.XMax
+            lon = x_min + (x_max - x_min) / 2
+        elif self.info.spatialReference.type == 'Projected':
+            lon = self.info.spatialReference.centralMeridianInDegrees
+        utm_zone = int(lon + 180.0) / 6 + 1
+        return utm_zone
+
+    def get_length_results(self):
+        if self.has_ccoast:
+            cursor_fields = ['SHAPE@LENGTH', 'CLASS']
+        else:
+            cursor_fields = ['SHAPE@LENGTH']
+            ccoast_class = None
+
+        with arcpy.da.SearchCursor(self.shp_path, cursor_fields, 
+                                   spatial_reference=self.sr_to_use) as cursor:
+            for row in cursor:
+                if self.has_ccoast:
+                    ccoast_class = row[1]
+                self.add_to_shp_results(ccoast_class, row[0])
+        return 
+
+    def add_to_shp_results(self, ccoast_class, length_m):
+        # convert total length to desired units
+        length_sm = length_m / METERS_PER_US_STATUTE_MILE
+        length_nm = length_m / METERS_PER_US_NAUTICAL_MILE
+
+        result_info = [self.shp_name, self.shp_path, 
+                       self.info.spatialReference.name, self.sr_to_use.name,
+                       ccoast_class, length_sm, length_nm]
+
+        self.results.append(result_info)
+        
+
+class ResultsTable:
+
     def __init__(self):
-        pass
+        self.results = []
+        self.table_name = arcpy.ValidateTableName(str(datetime.datetime.now())[0:19])
+        self.table_path = os.path.join(arcpy.env.scratchGDB, 
+                                       'ShorelineMileages_{}'.format(self.table_name))
+
+    def add_shp_results(self, shp_results):
+        self.results.extend(shp_results)
+
+    def export_to_table(self):
+        results_df = pd.DataFrame(self.results, columns=[
+            'shp_name', 'shp_path', 'shp_sr', 'calc_sr', 
+            'ccoast_class', 'length_sm', 'length_nm'])
+        x = np.array(np.rec.fromrecords(results_df.values))
+        arcpy.AddMessage(x)
+        names = results_df.dtypes.index.tolist()
+        x.dtype.names = tuple(names)
+        arcpy.da.NumPyArrayToTable(x, self.table_path)
+
+    def add_table_to_current_map(self):
+        mxd = arcpy.mapping.MapDocument("CURRENT")
+        df = arcpy.mapping.ListDataFrames(mxd)[0]
+        table_view = arcpy.mapping.TableView(self.table_path)
+        arcpy.mapping.AddTableView(df, table_view)
+        arcpy.RefreshTOC()
+        del mxd
 
 
 def main():
@@ -39,83 +126,19 @@ def main():
     # get the user-specified shapefile path(s)
     shps = arcpy.GetParameterAsText(0).split(';')
 
-    # create dict to store results
-    results = {'shp_name': [],
-               'shp_path': [],
-               'original_shp_coord_sys': [],
-               'length_sm': [],
-               'length_nm': [],
-               'calculation_coord_sys': [],      
-               }
+    results = ResultsTable()
 
     # loop through each user-specified shapefile
     for shp_path in shps:
 
-        shp_name = shp_path.split('\\')[-1]
+        shp = ShorelineFile(shp_path)
+        shp.get_length_results()
 
-        # get shapefile information
-        shp_info = arcpy.Describe(shp_path)
-        shp_extent = shp_info.extent
-        shp_sr = shp_info.spatialReference
+        results.add_shp_results(shp.results)
 
-        # determine shapefile's UTM zone
-        if shp_sr.type == 'Geographic':
-            lon = shp_extent.XMin + (shp_extent.XMax - shp_extent.XMin) / 2
-        elif shp_sr.type == 'Projected':
-            lon = shp_sr.centralMeridianInDegrees
-
-        utm_zone = int(lon + 180.0) / 6 + 1
-
-        # select EPSG code of relevant projected coordinate system
-        utm_zone_epsg = int(epsg_codes[utm_zone][0])
-
-        # define spatial reference to use in searchcursor
-        # (because calculations should be done in cartesian space, not unprojected degrees)
-        sr = arcpy.SpatialReference(utm_zone_epsg)
-
-        # initialize cumulative length to zero
-        cum_length_m = 0
-
-        # loop through polylines, via cursor, adding to cumulative length
-        fields = ['SHAPE@', 'SHAPE@LENGTH']
-        with arcpy.da.SearchCursor(shp_path, fields, spatial_reference=sr) as cursor:
-            for row in cursor:
-                cum_length_m += row[1]
-
-        # convert total length to desired units
-        length_sm = cum_length_m / METERS_PER_US_STATUTE_MILE
-        length_nm = cum_length_m / METERS_PER_US_NAUTICAL_MILE
-
-        # append results to appropriate list in results dict
-        results['shp_name'].append(shp_name)
-        results['shp_path'].append(shp_path)
-        results['original_shp_coord_sys'].append(shp_sr.name)
-        results['calculation_coord_sys'].append(epsg_codes[utm_zone][1])
-        results['length_sm'].append(round(length_sm, 2))
-        results['length_nm'].append(round(length_nm, 2))
-
-    # output total length to user (as pandas dataframe)
-    results_df = pd.DataFrame(results, index=results['shp_name']).drop(['shp_name'], axis=1)
-
-    # reorder the columns
-    results_df = results_df[['shp_path', 'original_shp_coord_sys', 'calculation_coord_sys', 'length_sm', 'length_nm']]
-
-    # generate geodatabase table from results pandas dataframe
-    x = np.array(np.rec.fromrecords(results_df.values))
-    names = results_df.dtypes.index.tolist()
-    x.dtype.names = tuple(names)
-    table_name = str(datetime.datetime.now())[0:19]  # don't need fraction of secs!
-    table_name = arcpy.ValidateTableName(table_name)
-    table_path = os.path.join(arcpy.env.scratchGDB, 'ShorelineMileages_{}'.format(table_name))
-    arcpy.da.NumPyArrayToTable(x, table_path)
-
-    # add geodatabase to the 'CURRENT' map
-    mxd = arcpy.mapping.MapDocument("CURRENT")
-    df = arcpy.mapping.ListDataFrames(mxd)[0]
-    table_view = arcpy.mapping.TableView(table_path)
-    arcpy.mapping.AddTableView(df, table_view)
-    arcpy.RefreshTOC()
-    del mxd
+    arcpy.AddMessage(results.results)
+    results.export_to_table()
+    results.add_table_to_current_map()
 
 
 if __name__ == "__main__":
