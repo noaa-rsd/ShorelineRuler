@@ -2,8 +2,6 @@
 This script is designed to be run via the 'Shoreline Ruler' tool
 in NOAA RSD's in-house ArcGIS toolbox RSD_Toolbox.tbx.
 
-General script workflow:
-
 
 Author:
 Nick Forfinski-Sarkozi
@@ -23,36 +21,57 @@ class ShorelineFile:
     """An instance of this class is created for every shapefile a user specifies."""
 
     def __init__(self, shp_path):
-        self.shp_path = shp_path
-        self.shp_name = self.shp_path.split(os.sep)[-1]
-        self.info = arcpy.Describe(self.shp_path)
-        self.utm_zone = self.calc_utm_zone()
-        self.utm_zone_epsg = int(epsg_codes[self.utm_zone][0])
+        self.path = shp_path
+        self.name = self.path.split(os.sep)[-1]
+        self.info = arcpy.Describe(self.path)
+        self.utm_zone_epsg = self.calc_utm_zone_epsg()
         self.sr_to_use = arcpy.SpatialReference(self.utm_zone_epsg)
-        self.shp_fields = arcpy.ListFields(self.shp_path)
+        self.shp_fields = self.get_shapefile_fields()
         self.has_ccoast = True if 'CLASS' in [f.name for f in self.shp_fields] else False
         self.results = []
 
-    def calc_utm_zone(self):
+    def get_shapefile_fields(self):
+        try:
+            fields = arcpy.ListFields(self.path)
+        except Exception as e:
+            arcpy.AddWarning('problem with getting fields from {}, moving on'.format(self.path))
+            problem_shps.append([self.path, self.name, 'problem with listing shapefile fields'])
+            fields = []
+        finally:
+            return fields
+
+    def calc_utm_zone_epsg(self):
         """This method calculates the UTM zone of the shapefile based on the
         longitude midpoint.  The shapefile is assumed to be in unprojected
         decimal degrees (NAD83).
         """
 
-        if self.info.spatialReference.type == 'Geographic':
-            x_min = self.info.Extent.XMin
-            x_max = self.info.Extent.XMax
-            lon = x_min + (x_max - x_min) / 2
-        elif self.info.spatialReference.type == 'Projected':
-            lon = self.info.spatialReference.centralMeridianInDegrees
-        utm_zone = int(lon + 180.0) / 6 + 1
-        return utm_zone
+        try:
+            arcpy.AddMessage('reading spatial reference of {}...'.format(self.name))
+            if self.info.spatialReference.type == 'Geographic':
+                x_min = self.info.Extent.XMin
+                x_max = self.info.Extent.XMax
+                lon = x_min + (x_max - x_min) / 2
+            elif self.info.spatialReference.type == 'Projected':
+                lon = self.info.spatialReference.centralMeridianInDegrees
+
+            utm_zone = int(lon + 180.0) / 6 + 1
+            utm_zone_epsg = int(epsg_codes[utm_zone][0])
+        except Exception as e:
+            arcpy.AddWarning('unable to calculate UTM zone for {}'.format(self.name))
+            arcpy.AddWarning('(The shp probably has an unknown spatial reference.)')
+            arcpy.AddWarning('skipping file and moving on...')
+            problem_shps.append([self.path, self.name, 'unable to calculate UTM zone'])
+            utm_zone_epsg = None
+        finally:
+            return utm_zone_epsg
 
     def calc_lengths(self):
-        """This method "calculates" the length of a feature by accessing the SHAPE@LENGTH 
-        token of the features geometry object.  Although the input spatial reference
-        is assumed to be unprojected degress (NAD83), the length is reported as 
-        per the spatial reference referenced in the searchcursor.
+        """This method "calculates" the length of a feature by accessing 
+        the SHAPE@LENGTH token of the features geometry object.  Although 
+        the input spatial reference is assumed to be unprojected degress 
+        (NAD83), the length is reported as per the spatial reference 
+        referenced in the searchcursor.
         """
 
         if self.has_ccoast:
@@ -60,7 +79,7 @@ class ShorelineFile:
         else:
             cursor_fields = ['SHAPE@LENGTH', 'OID@']
 
-        with arcpy.da.SearchCursor(self.shp_path, cursor_fields, 
+        with arcpy.da.SearchCursor(self.path, cursor_fields, 
                                    spatial_reference=self.sr_to_use) as cursor:
             
             for row in cursor:
@@ -75,19 +94,21 @@ class ShorelineFile:
                 else:
                     arcpy.AddWarning(
                         '''unknown geometry error OID# 
-                        {} ({}), moving on...'''.format(row[-1], self.shp_name))
+                        {} ({}), moving on...'''.format(row[-1], self.name))
+                    problem_shps.append([self.path, self.name, 'unknown geometry error OID# {}'.format(row[-1])])
 
     def add_to_shp_results(self, ccoast_class, length_m):
         """This method appends the current result (i.e. one feature's
-        length, with additional meatadat) to the results for the entire 
+        length, with additional meatadata) to the results for the entire 
         shapefile's result array.
         """
         length_sm = length_m / METERS_PER_US_STATUTE_MILE
         length_nm = length_m / METERS_PER_US_NAUTICAL_MILE
 
-        result_info = (self.shp_name, self.shp_path, 
-                       self.info.spatialReference.name, self.sr_to_use.name,
-                       ccoast_class, length_sm, length_nm, )
+        result_info = (self.name, self.path, 
+                       self.info.spatialReference.name, 
+                       self.sr_to_use.name, ccoast_class, 
+                       length_sm, length_nm, )
 
         self.results.append(result_info)
         
@@ -105,6 +126,10 @@ class ResultsTable:
 
         self.fields = ['shp_name', 'shp_path', 'shp_sr', 'calc_sr', 
                        'ccoast_class', 'length_sm', 'length_nm']
+
+        self.agg_logic = {'shp_sr': 'first', 'shp_path': 'first', 
+                     'calc_sr': 'first', 'length_sm': 'sum', 
+                     'length_nm': 'sum'}
 
     def add_shp_results(self, shp_results):
         """This method adds a shapefile's result table to the
@@ -125,8 +150,10 @@ class ResultsTable:
         arcpy.AddMessage('---------------------------------')
 
         arcpy.AddMessage('--------- TOTAL LENGTHS ---------')
-        shp_grouped_df = self.results_df.groupby(['shp_name'])
-        arcpy.AddMessage(shp_grouped_df.sum().round(self.fields_to_round))
+        df = self.results_df.groupby(['shp_name'])
+        df = df.agg(self.agg_logic)
+        df = df.round(self.fields_to_round)
+        arcpy.AddMessage(df[[f for f in self.fields if f not in ['shp_name', 'ccoast_class']]])
         arcpy.AddMessage('---------------------------------')
 
     def export_to_table(self):
@@ -135,11 +162,8 @@ class ResultsTable:
         in the arcpy.env.scratchGDB environment setting)
         """
         arcpy.AddMessage('exporting results to {}...'.format(self.table_path))
-        agg_logic = {'shp_sr': 'first', 'shp_path': 'first', 
-                     'calc_sr': 'first', 'length_sm': 'sum', 
-                     'length_nm': 'sum'}
 
-        df = self.results_df.groupby(self.groupby_fields, as_index=False).agg(agg_logic)
+        df = self.results_df.groupby(self.groupby_fields, as_index=False).agg(self.agg_logic)
         df = df[self.fields]
         df = df.round(self.fields_to_round)
 
@@ -163,24 +187,71 @@ class ResultsTable:
 def main():
 
     # get the user-specified tool settings
-    shps = arcpy.GetParameterAsText(0).split(';')   # shapefile(s)
-    make_table = arcpy.GetParameterAsText(1)        # create table? (boolean)
+    shps = arcpy.GetParameterAsText(0).split(';')
+    shp_dirs = arcpy.GetParameterAsText(1).split(';')
+    include_subdirs = arcpy.GetParameterAsText(2)
+    make_table = arcpy.GetParameterAsText(3)
 
+
+    def gather_shps(shps, shp_dirs, include_subdirs):
+        shps_to_process = []
+
+        # add individual shp(s)
+        for shp in [s for s in shps if s is not '']:
+            shps_to_process.append(shp)
+
+
+        arcpy.AddMessage('getting shapefiles in specified directory(ies)...')
+        for shp_dir in shp_dirs:
+            if include_subdirs:
+                for root, dirs, files in os.walk(shp_dir):
+                    for f in files:
+                        if f.endswith('.shp'): 
+                            shp_path = os.path.join(root, f)
+                            arcpy.AddMessage(shp_path)
+                            shps_to_process.append(shp_path)
+            else:
+                for f in os.listdir(shp_dir):
+                    if f.endswith('.shp'):
+                        shp_path = os.path.join(shp_dir, f)
+                        arcpy.AddMessage(shp_path)
+                        shps_to_process.append(shp_path)
+
+        return shps_to_process
+
+                    
     results = ResultsTable()
 
-    # loop through each user-specified shapefile
-    for shp_path in shps:
+    shps = gather_shps(shps, shp_dirs, include_subdirs)
 
-        shp = ShorelineFile(shp_path)
-        shp.calc_lengths()
-        results.add_shp_results(shp.results)
+    if shps:
+        for shp_path in shps:
+            shp = ShorelineFile(shp_path)
+
+            if shp.info.shapeType == u'Polyline':
+                if shp.utm_zone_epsg is not None:
+                    arcpy.AddMessage('processing {}...'.format(shp.path))
+                    shp.calc_lengths()
+                    results.add_shp_results(shp.results)
+            else:
+                arcpy.AddWarning(
+                    '''{} doesn\'t contain polylines; ignoring 
+                    it and moving on...'''.format(shp.path))
+                problem_shps.append([shp.path, shp.name, 'doesn\'t contain polylines'])
     
-    # display summary table to tool output window
-    results.display_summary_table()
+        results.display_summary_table()
 
-    if make_table:
-        results.export_to_table()
-        results.add_table_to_current_map()
+        if make_table:
+            results.export_to_table()
+            results.add_table_to_current_map()
+    else:
+        arcpy.AddWarning('''
+        No shapefiles were specified and/or contained 
+        in the specified directory(ies).''')
+
+    arcpy.AddWarning('--------- PROBLEM SHAPEFILES ---------')
+    arcpy.AddWarning(pd.DataFrame(problem_shps))
+    arcpy.AddWarning('--------------------------------------')
 
 
 if __name__ == "__main__":
@@ -214,5 +285,7 @@ if __name__ == "__main__":
         59: ('6328', 'NAD_1983_2011_UTM_Zone_59N'),
         60: ('6329', 'NAD_1983_2011_UTM_Zone_60N'),
     }
+
+    problem_shps = []
 
     main()
