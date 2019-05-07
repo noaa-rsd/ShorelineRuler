@@ -1,6 +1,8 @@
 {
   "ExpandedNodes": [
-    ""
+    "",
+    "\\scripts"
   ],
+  "SelectedNode": "\\scripts\\calc_length.py",
   "PreviewInSolutionExplorer": false
 }

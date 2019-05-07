@@ -1,19 +1,9 @@
 """
-This script is designed to be run via the CalculateShorelineLength tool
+This script is designed to be run via the 'Shoreline Ruler' tool
 in NOAA RSD's in-house ArcGIS toolbox RSD_Toolbox.tbx.
 
-Purpose:
-To calculate the total length of polyline features contained in a
-user-specified shoreline shapefile
+General script workflow:
 
-General Steps:
--get the user-specified shapefile path
--determine shapefile's UTM zone, based on longitude midpoint
--select EPSG code of calculated UTM zone
--define spatial reference to use in searchcursor
--loop through polylines, via searchcursor, adding to cumulative length
--convert total length to desired units
--output total length to user
 
 Author:
 Nick Forfinski-Sarkozi
@@ -22,26 +12,15 @@ nick.forfinski-sarkozi@noaa.gov
 
 
 import os
-import arcpy
-import pandas as pd
-import numpy as np
 import datetime
-
-
-# create dict to store results
-# select EPSG code of relevant projected coordinate system
-# define spatial reference to use in searchcursor
-# (because calculations should be done in cartesian space, not unprojected degrees)
-# initialize cumulative length to zero
-# loop through polylines, via cursor, adding to cumulative length
-# output total length to user (as pandas dataframe)            
-# reorder the columns
-# generate geodatabase table from results pandas dataframe
-# add geodatabase to the 'CURRENT' map
-# append results to appropriate list in results dict
+import numpy as np
+import pandas as pd
+import arcpy
 
 
 class ShorelineFile:
+
+    """An instance of this class is created for every shapefile a user specifies."""
 
     def __init__(self, shp_path):
         self.shp_path = shp_path
@@ -55,6 +34,11 @@ class ShorelineFile:
         self.results = []
 
     def calc_utm_zone(self):
+        """This method calculates the UTM zone of the shapefile based on the
+        longitude midpoint.  The shapefile is assumed to be in unprojected
+        decimal degrees (NAD83).
+        """
+
         if self.info.spatialReference.type == 'Geographic':
             x_min = self.info.Extent.XMin
             x_max = self.info.Extent.XMax
@@ -65,8 +49,14 @@ class ShorelineFile:
         return utm_zone
 
     def calc_lengths(self):
+        """This method "calculates" the length of a feature by accessing the SHAPE@LENGTH 
+        token of the features geometry object.  Although the input spatial reference
+        is assumed to be unprojected degress (NAD83), the length is reported as 
+        per the spatial reference referenced in the searchcursor.
+        """
+
         if self.has_ccoast:
-            cursor_fields = ['SHAPE@LENGTH', 'CLASS', 'SHAPE@', 'OID@']
+            cursor_fields = ['SHAPE@LENGTH', 'CLASS', 'OID@']
         else:
             cursor_fields = ['SHAPE@LENGTH', 'OID@']
 
@@ -79,12 +69,19 @@ class ShorelineFile:
                 else:
                     ccoast_class = 'none'
 
-                if type(row[0]) is float:  # make sure length is a number (sometimes geometry is corrupt)
+                # make sure length is a number (sometimes geometry is corrupt)
+                if type(row[0]) is float:  
                     self.add_to_shp_results(ccoast_class, row[0])
                 else:
-                    arcpy.AddWarning('unknown geometry error OID# {} ({}), moving on...'.format(row[-1], self.shp_name))
+                    arcpy.AddWarning(
+                        '''unknown geometry error OID# 
+                        {} ({}), moving on...'''.format(row[-1], self.shp_name))
 
     def add_to_shp_results(self, ccoast_class, length_m):
+        """This method appends the current result (i.e. one feature's
+        length, with additional meatadat) to the results for the entire 
+        shapefile's result array.
+        """
         length_sm = length_m / METERS_PER_US_STATUTE_MILE
         length_nm = length_m / METERS_PER_US_NAUTICAL_MILE
 
@@ -99,6 +96,9 @@ class ResultsTable:
 
     def __init__(self):
         self.results = []
+        self.results_df = None
+        self.groupby_fields = ['shp_name', 'ccoast_class']
+        self.fields_to_round = {'length_sm': 2, 'length_nm': 2}
         self.table_name = arcpy.ValidateTableName(str(datetime.datetime.now())[0:19])
         self.table_path = os.path.join(arcpy.env.scratchGDB, 
                                        'ShorelineMileages_{}'.format(self.table_name))
@@ -107,29 +107,51 @@ class ResultsTable:
                        'ccoast_class', 'length_sm', 'length_nm']
 
     def add_shp_results(self, shp_results):
+        """This method adds a shapefile's result table to the
+        overall results table.
+        """
         self.results.extend(shp_results)
 
+    def display_summary_table(self):
+        """This method displays two summary tables: 
+        (1) the results grouped by shapefile and C-COAST class (i.e., lengths per class per shp)
+        (2) the results grouped by shapefile (i.e., total lengths per shp)
+        """
+        self.results_df = pd.DataFrame(self.results, columns=self.fields)
+
+        arcpy.AddMessage('----- C-COAST CLASS LENGTHS -----')
+        class_grouped_df = self.results_df.groupby(self.groupby_fields)
+        arcpy.AddMessage(class_grouped_df.sum().round(self.fields_to_round))
+        arcpy.AddMessage('---------------------------------')
+
+        arcpy.AddMessage('--------- TOTAL LENGTHS ---------')
+        shp_grouped_df = self.results_df.groupby(['shp_name'])
+        arcpy.AddMessage(shp_grouped_df.sum().round(self.fields_to_round))
+        arcpy.AddMessage('---------------------------------')
+
     def export_to_table(self):
-        results_df = pd.DataFrame(self.results, columns=self.fields)
+        """This method exports the overall results table (a Pandas DataFrame)
+        to an ArcGIS table in the scratch geodatabase location (as specified
+        in the arcpy.env.scratchGDB environment setting)
+        """
+        arcpy.AddMessage('exporting results to {}...'.format(self.table_path))
+        agg_logic = {'shp_sr': 'first', 'shp_path': 'first', 
+                     'calc_sr': 'first', 'length_sm': 'sum', 
+                     'length_nm': 'sum'}
 
-        groupby_fields = ['shp_name', 'ccoast_class']
-        fields_to_round = {'length_sm': 2, 'length_nm': 2}
+        df = self.results_df.groupby(self.groupby_fields, as_index=False).agg(agg_logic)
+        df = df[self.fields]
+        df = df.round(self.fields_to_round)
 
-        arcpy.AddMessage(results_df.groupby(groupby_fields).sum().round(fields_to_round))
-
-        agg_logic = {'shp_sr': 'first', 'shp_path': 'first', 'calc_sr': 'first', 
-                     'length_sm': 'sum', 'length_nm': 'sum'}
-
-        results_df = results_df.groupby(groupby_fields, as_index=False).agg(agg_logic)
-        results_df = results_df[self.fields]
-        results_df = results_df.round(fields_to_round)
-
-        x = np.array(np.rec.fromrecords(results_df.values))
-        names = results_df.dtypes.index.tolist()
+        x = np.array(np.rec.fromrecords(df.values))
+        names = df.dtypes.index.tolist()
         x.dtype.names = tuple(names)
         arcpy.da.NumPyArrayToTable(x, self.table_path)
 
     def add_table_to_current_map(self):
+        """This methods adds the (optional) ArcGIS table to the CURRENT map.
+        """
+        arcpy.AddMessage('adding {} to CURRENT map...'.format(self.table_path))
         mxd = arcpy.mapping.MapDocument("CURRENT")
         df = arcpy.mapping.ListDataFrames(mxd)[0]
         table_view = arcpy.mapping.TableView(self.table_path)
@@ -140,8 +162,9 @@ class ResultsTable:
 
 def main():
 
-    # get the user-specified shapefile path(s)
-    shps = arcpy.GetParameterAsText(0).split(';')
+    # get the user-specified tool settings
+    shps = arcpy.GetParameterAsText(0).split(';')   # shapefile(s)
+    make_table = arcpy.GetParameterAsText(1)        # create table? (boolean)
 
     results = ResultsTable()
 
@@ -150,16 +173,20 @@ def main():
 
         shp = ShorelineFile(shp_path)
         shp.calc_lengths()
-
         results.add_shp_results(shp.results)
+    
+    # display summary table to tool output window
+    results.display_summary_table()
 
-    results.export_to_table()
-    results.add_table_to_current_map()
+    if make_table:
+        results.export_to_table()
+        results.add_table_to_current_map()
 
 
 if __name__ == "__main__":
 
     METERS_PER_US_STATUTE_MILE = 1609.3472186944
+    METERS_PER_INT_STATUTE_MILE = 1609.344  # not used
     METERS_PER_US_NAUTICAL_MILE = 1852.
 
     # dict of EPSG codes
