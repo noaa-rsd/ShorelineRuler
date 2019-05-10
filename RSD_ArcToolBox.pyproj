@@ -5,7 +5,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>{68d5b7fc-75fb-41e8-a746-a8de41cc0e86}</ProjectGuid>
     <ProjectHome />
-    <StartupFile>scripts\calc_length.py</StartupFile>
+    <StartupFile>scripts\shoreline_ruler.py</StartupFile>
     <SearchPath />
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
@@ -25,7 +25,7 @@
     <Folder Include="scripts\" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="scripts\calc_length.py" />
+    <Compile Include="scripts\shoreline_ruler.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="docs\CalculateShorelineLength.html" />
