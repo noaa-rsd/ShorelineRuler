@@ -54,7 +54,7 @@ class ShorelineFile:
                 lon = x_min + (x_max - x_min) / 2
             elif self.info.spatialReference.type == 'Projected':
                 lon = self.info.spatialReference.centralMeridianInDegrees
-            utm_zone = int(lon + 180.0) / 6 + 1
+            utm_zone = int((lon + 180.0) / 6) + 1
         except Exception as e:
             arcpy.AddWarning('unable to calculate UTM zone for {}'.format(self.name))
             arcpy.AddWarning('(The shp probably has an unknown spatial reference.)')
