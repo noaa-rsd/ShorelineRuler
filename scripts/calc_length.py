@@ -201,30 +201,35 @@ def main():
     include_subdirs = arcpy.GetParameterAsText(2)
     make_table = arcpy.GetParameterAsText(3)
 
+    arcpy.AddMessage(shps)
+    arcpy.AddMessage(shp_dirs)
 
     def gather_shps(shps, shp_dirs, include_subdirs):
         shps_to_process = []
 
         # add individual shp(s)
-        for shp in [s for s in shps if s is not '']:
-            shps_to_process.append(shp)
+        if shps[0] is not '':
+            for shp in shps:
+                shps_to_process.append(shp)
+
 
         # identitfy shapefiles in specified directory(ies)
-        arcpy.AddMessage('getting shapefiles in specified directory(ies)...')
-        for shp_dir in shp_dirs:
-            if include_subdirs:
-                for root, dirs, files in os.walk(shp_dir):
-                    for f in files:
-                        if f.endswith('.shp'): 
-                            shp_path = os.path.join(root, f)
+        if shp_dirs[0] is not '':
+            arcpy.AddMessage('getting shapefiles in specified directory(ies)...')
+            for shp_dir in shp_dirs:
+                if include_subdirs:
+                    for root, dirs, files in os.walk(shp_dir):
+                        for f in files:
+                            if f.endswith('.shp'): 
+                                shp_path = os.path.join(root, f)
+                                arcpy.AddMessage(shp_path)
+                                shps_to_process.append(shp_path)
+                else:
+                    for f in os.listdir(shp_dir):
+                        if f.endswith('.shp'):
+                            shp_path = os.path.join(shp_dir, f)
                             arcpy.AddMessage(shp_path)
                             shps_to_process.append(shp_path)
-            else:
-                for f in os.listdir(shp_dir):
-                    if f.endswith('.shp'):
-                        shp_path = os.path.join(shp_dir, f)
-                        arcpy.AddMessage(shp_path)
-                        shps_to_process.append(shp_path)
 
         return shps_to_process
 
