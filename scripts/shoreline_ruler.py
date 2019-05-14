@@ -21,7 +21,7 @@ class ShorelineFile:
     """An instance of this class is created for every shapefile a user specifies."""
 
     def __init__(self, shp_path):
-        self.path = shp_path
+        self.path = shp_path.replace('\'', '')
         self.name = self.path.split(os.sep)[-1]
         self.info = arcpy.Describe(self.path)
         self.utm_zone = self.calc_utm_zone()
